@@ -17,6 +17,12 @@ cp .env.example .env
 # then edit .env to add your key
 ```
 
+Set an app password:
+
+```bash
+# add APP_PASSWORD to your environment or .env
+```
+
 ## Run
 
 ```bash

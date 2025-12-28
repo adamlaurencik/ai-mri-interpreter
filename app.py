@@ -14,6 +14,33 @@ st.set_page_config(
     layout="wide",
 )
 
+def require_password() -> None:
+    app_password = os.getenv("APP_PASSWORD")
+    if not app_password:
+        st.error("APP_PASSWORD is not set in the environment.")
+        st.stop()
+
+    if st.session_state.get("authenticated"):
+        return
+
+    st.title("MRI Interpretation Spike")
+    st.caption("Enter the password to continue")
+    with st.form("password_gate"):
+        st.text_input("Password", type="password", key="password_input")
+        submitted = st.form_submit_button("Unlock")
+
+    if submitted:
+        if st.session_state.get("password_input") == app_password:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    st.stop()
+
+
+if os.getenv("APP_PASSWORD") and os.getenv("USE_PASSWORD_AUTH", "false").lower() == "true":
+    require_password()
+
 st.title("MRI Interpretation Spike")
 st.caption("Paste MRI report text and get a structured interpretation summary")
 
