@@ -23,6 +23,12 @@ Set an app password:
 # add APP_PASSWORD to your environment or .env
 ```
 
+Set an OCR token (only needed for image input):
+
+```bash
+# add EDENAI_API_TOKEN to your environment or .env
+```
+
 ## Run
 
 ```bash
