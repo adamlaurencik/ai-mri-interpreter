@@ -60,12 +60,13 @@ with st.sidebar:
         ["English", "Slovak", "Czech", "German"],
         index=0,
     )
-    model = st.text_input("Model", value="gpt-4o-mini")
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
-    max_tokens = st.slider("Max tokens", 256, 2000, 800, 64)
     st.caption("Set OPENAI_API_KEY in your environment")
     if input_mode == "Image (OCR via EdenAI)":
         st.caption("Set EDENAI_API_TOKEN in your environment")
+
+model = "gpt-4o-mini"
+temperature = 0.2
+max_tokens = 800
 
 st.markdown(
     """
