@@ -3,6 +3,7 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 import requests
 import streamlit as st
@@ -68,13 +69,26 @@ MAX_TOKENS = 10000
 PRICE_INPUT_PER_TOKEN = 2.50 / 1_000_000
 PRICE_OUTPUT_PER_TOKEN = 15.00 / 1_000_000
 
-# Color palette per certainty level
-CERTAINTY_COLORS = {
-    "definite": "#ffd166",
-    "probable": "#a8d8ea",
-    "possible": "#c3f0ca",
-    "unknown": "#e0e0e0",
+HIGHLIGHT_COLOR = "#ffd166"
+
+UI_LABELS = {
+    "English": {"translation": "Translation", "context": "Context"},
+    "Slovak":  {"translation": "Preklad",     "context": "Kontext"},
+    "Czech":   {"translation": "Překlad",     "context": "Kontext"},
+    "German":  {"translation": "Übersetzung", "context": "Kontext"},
 }
+
+
+def _ui_label(key: str, language: str) -> str:
+    return UI_LABELS.get(language, UI_LABELS["English"]).get(key, key)
+
+
+def _normalize_certainty(raw: str) -> str:
+    """Collapse to {certain, uncertain}. Defaults to 'certain' when missing/unknown input."""
+    v = (raw or "").strip().lower()
+    if v in ("uncertain", "probable", "possible", "unknown"):
+        return "uncertain"
+    return "certain"
 
 st.markdown(
     """
@@ -83,9 +97,45 @@ Only use de-identified MRI text.
 """
 )
 
+# ---------------------------------------------------------------------------
+# Test examples — drop .txt files into examples/. Filename (without .txt) is
+# the label shown in the dropdown.
+# ---------------------------------------------------------------------------
+
+EXAMPLES_DIR = Path(__file__).parent / "examples"
+EXAMPLES_SENTINEL = "— select an example —"
+
+
+def _load_examples() -> dict[str, str]:
+    examples: dict[str, str] = {EXAMPLES_SENTINEL: ""}
+    if EXAMPLES_DIR.is_dir():
+        for path in sorted(EXAMPLES_DIR.glob("*.txt")):
+            examples[path.stem] = path.read_text(encoding="utf-8")
+    return examples
+
+
+_examples = _load_examples()
+
+
+def _apply_example() -> None:
+    choice = st.session_state.get("example_choice", EXAMPLES_SENTINEL)
+    st.session_state["mri_text"] = _examples.get(choice, "")
+
+
+st.selectbox(
+    "Load a test example",
+    list(_examples.keys()),
+    key="example_choice",
+    on_change=_apply_example,
+    help=f"Reads .txt files from {EXAMPLES_DIR.name}/. You can still edit the text after loading.",
+)
+if len(_examples) == 1:
+    st.caption(f"_No examples found. Drop .txt files into `{EXAMPLES_DIR.name}/` to populate this list._")
+
 mri_text = st.text_area(
     "MRI report text",
     height=320,
+    key="mri_text",
     placeholder="Paste the MRI report text here...",
 )
 
@@ -97,55 +147,141 @@ run = st.button("Interpret report", type="primary")
 # ---------------------------------------------------------------------------
 
 @dataclass
-class Finding:
+class ReportLine:
+    """One non-empty line of the original report, with its character offset."""
+    line_id: int
+    start: int
+    text: str
+
+
+@dataclass
+class FindingSegment:
     exact_quote: str
-    finding_type: str
-    anatomical_location: str
-    certainty: str
-    explanation: str
+    line_id: int = -1  # from Step 1; the line the quote belongs to
     start: int = -1
     end: int = -1
     match_score: float = 0.0
+
+
+@dataclass
+class FindingGroup:
+    group_id: str
+    finding_type: str           # canonical English from Step 1 (kept for debugging/grouping invariants)
+    anatomical_location: str    # canonical English from Step 1
+    certainty: str              # enum: certain / uncertain (internal only; not shown in UI)
+    segments: list[FindingSegment]
+    finding_type_localized: str = ""
+    anatomical_location_localized: str = ""
+    translation: str = ""        # Step 2: plain-language rendering in target language
+    context: str = ""            # Step 2: what this could mean for the patient
+
+
+def split_report_into_lines(report_text: str) -> list[ReportLine]:
+    """Split on newlines, skip blank lines. line_id is 1-based and sequential."""
+    lines: list[ReportLine] = []
+    offset = 0
+    line_id = 1
+    for raw in report_text.split("\n"):
+        if raw.strip():
+            lines.append(ReportLine(line_id=line_id, start=offset, text=raw))
+            line_id += 1
+        offset += len(raw) + 1  # +1 for the \n
+    return lines
+
+
+def format_numbered_report(lines: list[ReportLine]) -> str:
+    return "\n".join(f"[{l.line_id}] {l.text}" for l in lines)
 
 
 # ---------------------------------------------------------------------------
 # Step 1 — LLM extraction
 # ---------------------------------------------------------------------------
 
-EXTRACTION_PROMPT = """\
-You are a radiology assistant specializing in spinal imaging. Analyze the MRI 
-report below and extract every finding that represents a departure from 
+SEGMENTATION_PROMPT = """\
+You are a radiology assistant specializing in spinal imaging. Analyze the MRI
+report below and extract every finding that represents a departure from
 ideal/healthy anatomy.
 
-CRITICAL INSTRUCTIONS: Do not filter out "mild," "degenerative," or "age-related" 
-findings. Even if a finding is described as "dystrophic," "chronic," or 
-"incidental," it must be extracted if it describes a change in bone marrow 
-signal, vertebral structure, disc health, or nerve space. If it could 
+CRITICAL INSTRUCTIONS: Do not filter out "mild," "degenerative," or "age-related"
+findings. Even if a finding is described as "dystrophic," "chronic," or
+"incidental," it must be extracted if it describes a change in bone marrow
+signal, vertebral structure, disc health, or nerve space. If it could
 theoretically contribute to a patient's pain or discomfort, include it.
-Filter findings that describe normal anatomy. 
+Filter findings that describe normal anatomy.
 Keep in mind it can happen that the sentence is negated and thus is not a positive finding.
 Even if some findings are repeated, include them multiple times.
 Make sure to split findings into individual findings, even if they are next to each other in the text.
 
+When the SAME clinical finding at the SAME anatomical location is mentioned more \
+than once in the report, extract EACH mention as a separate object AND assign them \
+the SAME "group_id". Distinct findings (different type or different location) MUST \
+have different group_ids. When group_ids match, the finding_type, anatomical_location, \
+and certainty fields MUST also match across those objects.
+
+The report below is presented with each line prefixed by a bracketed line number, \
+e.g. "[3] ...". For EVERY finding you extract, return the line number of the line \
+that contains the quote as the integer "line_id". The "exact_quote" MUST be a \
+verbatim sub-phrase drawn from that same line.
+
 For EACH finding return a JSON object with exactly these keys:
-- "exact_quote": the verbatim phrase or sentence from the report that describes \
-this finding (copy it character-for-character, do not paraphrase)
+- "line_id": integer line number (taken from the bracketed prefix) of the line \
+that contains this finding's exact_quote
+- "exact_quote": the verbatim phrase or sub-phrase from that line that describes \
+this finding (copy it character-for-character from within that line, do not paraphrase, \
+do not include the "[N] " prefix)
+- "group_id": a short stable slug combining finding type and location, e.g. \
+"disc-herniation-l4-l5", "marrow-signal-change-l3-body". Mentions of the same \
+finding at the same location MUST share this exact slug. Use only lowercase \
+letters, digits, and hyphens.
 - "finding_type": short category label, e.g. "disc herniation", "stenosis", \
 "signal change", "structural anomaly", "degenerative change", etc.
 - "anatomical_location": the anatomical region or level described, spelled out \
 in full (e.g. "L4/5 intervertebral disc" not "L4/5")
-- "certainty": one of "definite", "probable", "possible" — based on the \
-language used in the report
-- "explanation": 1–2 sentences explaining this finding in plain language for \
-a non-expert patientx
+- "certainty": one of "certain" or "uncertain". Default to "certain"; use \
+"uncertain" only when the report language itself hedges (e.g. "možné", \
+"pravdepodobne", "suspektný", "cannot exclude").
 
 Return ONLY a JSON object with a single key "findings" whose value is an array \
 of the above objects. No markdown fences, no extra text.
 
-Output language for "explanation": {language}
+MRI report:
+{numbered_report}
+"""
+
+
+EXPLANATION_PROMPT = """\
+You are a radiology assistant. Below is an MRI report followed by a list of \
+findings that were already extracted from it. For EACH finding, produce \
+patient-facing text in {language} for a non-expert audience. Use the full \
+report as context, but do NOT introduce findings that are not in the list.
+
+For every finding, produce all of the following IN {language}:
+1. A short translation of the finding_type into {language}.
+2. A short translation of the anatomical_location into {language}.
+3. A "translation" — ONE sentence that re-states, in plain non-medical language, \
+what the report actually says about this finding.
+4. A "context" — 1–2 sentences describing what this finding could mean for the \
+patient: what it might cause, how it could feel, or what typical implications \
+are. Be concrete but not alarmist.
+
+ALL five output fields MUST be written in {language}. Do not leave any field \
+in English or in the original report language unless {language} IS English.
+
+Return ONLY a JSON object with a single key "explanations" whose value is an \
+array of objects, each with exactly these keys:
+- "group_id": the exact group_id from the input list, copied verbatim
+- "finding_type": translation of the input finding_type into {language}
+- "anatomical_location": translation of the input anatomical_location into {language}
+- "translation": 1 sentence in {language} — plain-language rendering of the finding
+- "context": 1–2 sentences in {language} — implications for the patient
+
+No markdown fences, no extra text.
 
 MRI report:
 {report}
+
+Findings:
+{findings_json}
 """
 
 
@@ -218,37 +354,103 @@ def estimate_cost(usage: dict) -> str:
     return f"{input_tok} in / {output_tok} out tokens — ~${cost:.4f}"
 
 
-def extract_findings(report_text: str, language: str) -> tuple[list[Finding], str, str]:
-    """Step 1: call LLM and parse the structured JSON response. Returns (findings, raw, cost_str)."""
-    prompt = EXTRACTION_PROMPT.format(language=language, report=report_text)
-    raw, usage = call_openai_raw(prompt)
-    cost_str = estimate_cost(usage)
-
-    # Strip accidental markdown fences
-    cleaned = raw.strip()
+def _strip_json_fences(text: str) -> str:
+    cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = "\n".join(cleaned.split("\n")[1:])
     if cleaned.endswith("```"):
         cleaned = "\n".join(cleaned.split("\n")[:-1])
+    return cleaned
+
+
+def _coerce_line_id(raw_value) -> int:
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return -1
+
+
+def extract_findings(lines: list[ReportLine]) -> tuple[list[FindingGroup], str, str]:
+    """Step 1: LLM segmentation — extract structured findings (no explanations yet)."""
+    prompt = SEGMENTATION_PROMPT.format(numbered_report=format_numbered_report(lines))
+    raw, usage = call_openai_raw(prompt)
+    cost_str = estimate_cost(usage)
 
     try:
-        parsed = json.loads(cleaned)
+        parsed = json.loads(_strip_json_fences(raw))
     except json.JSONDecodeError as exc:
         raise LLMError(
-            f"Model returned invalid JSON: {exc}",
-            response_body=cleaned,
+            f"Segmentation call returned invalid JSON: {exc}",
+            response_body=raw,
         ) from exc
-    findings = [
-        Finding(
+
+    groups: dict[str, FindingGroup] = {}
+    ungrouped_counter = 0
+    for f in parsed.get("findings", []):
+        gid = f.get("group_id") or ""
+        if not gid:
+            gid = f"__ungrouped_{ungrouped_counter}"
+            ungrouped_counter += 1
+        segment = FindingSegment(
             exact_quote=f.get("exact_quote", ""),
-            finding_type=f.get("finding_type", ""),
-            anatomical_location=f.get("anatomical_location", ""),
-            certainty=f.get("certainty", "unknown").lower(),
-            explanation=f.get("explanation", ""),
+            line_id=_coerce_line_id(f.get("line_id")),
         )
-        for f in parsed.get("findings", [])
+        if gid in groups:
+            groups[gid].segments.append(segment)
+        else:
+            groups[gid] = FindingGroup(
+                group_id=gid,
+                finding_type=f.get("finding_type", ""),
+                anatomical_location=f.get("anatomical_location", ""),
+                certainty=_normalize_certainty(f.get("certainty", "")),
+                segments=[segment],
+            )
+    return list(groups.values()), raw, cost_str
+
+
+def generate_explanations(
+    report_text: str, groups: list[FindingGroup], language: str
+) -> tuple[list[FindingGroup], str, str]:
+    """Step 2: LLM call that fills in patient-facing explanations per group."""
+    if not groups:
+        return groups, "", estimate_cost({})
+
+    findings_payload = [
+        {
+            "group_id": g.group_id,
+            "finding_type": g.finding_type,
+            "anatomical_location": g.anatomical_location,
+            "certainty": g.certainty,
+            "quote": g.segments[0].exact_quote if g.segments else "",
+        }
+        for g in groups
     ]
-    return findings, raw, cost_str
+    prompt = EXPLANATION_PROMPT.format(
+        language=language,
+        report=report_text,
+        findings_json=json.dumps(findings_payload, ensure_ascii=False, indent=2),
+    )
+    raw, usage = call_openai_raw(prompt)
+    cost_str = estimate_cost(usage)
+
+    try:
+        parsed = json.loads(_strip_json_fences(raw))
+    except json.JSONDecodeError as exc:
+        raise LLMError(
+            f"Explanation call returned invalid JSON: {exc}",
+            response_body=raw,
+        ) from exc
+
+    by_id = {g.group_id: g for g in groups}
+    for item in parsed.get("explanations", []):
+        g = by_id.get(item.get("group_id"))
+        if g is None:
+            continue
+        g.finding_type_localized = item.get("finding_type", "")
+        g.anatomical_location_localized = item.get("anatomical_location", "")
+        g.translation = item.get("translation", "")
+        g.context = item.get("context", "")
+    return groups, raw, cost_str
 
 
 # ---------------------------------------------------------------------------
@@ -317,43 +519,59 @@ def _fuzzy_locate(report_text: str, quote: str) -> tuple[int, int, float]:
     return -1, -1, best_score
 
 
-def map_findings_to_offsets(report_text: str, findings: list[Finding]) -> list[Finding]:
-    """Step 2: locate each exact_quote in report_text and store character offsets."""
-    for f in findings:
-        quote = f.exact_quote.strip()
-        if not quote:
-            continue
-        start, end, score = _fuzzy_locate(report_text, quote)
-        f.start = start
-        f.end = end
-        f.match_score = score
-    return findings
+def map_findings_to_offsets(
+    report_text: str, lines: list[ReportLine], groups: list[FindingGroup]
+) -> list[FindingGroup]:
+    """Locate each segment's exact_quote within its line, falling back to the full report."""
+    line_by_id = {l.line_id: l for l in lines}
+    for g in groups:
+        for seg in g.segments:
+            quote = seg.exact_quote.strip()
+            if not quote:
+                continue
+            line = line_by_id.get(seg.line_id)
+            if line is not None:
+                rel_start, rel_end, score = _fuzzy_locate(line.text, quote)
+                if rel_start >= 0:
+                    seg.start = line.start + rel_start
+                    seg.end = line.start + rel_end
+                    seg.match_score = score
+                    continue
+            # Fallback: line_id missing/invalid, or quote not found within that line
+            start, end, score = _fuzzy_locate(report_text, quote)
+            seg.start = start
+            seg.end = end
+            seg.match_score = score
+    return groups
 
 
 # ---------------------------------------------------------------------------
 # Step 3 — HTML highlighted text
 # ---------------------------------------------------------------------------
 
-CERTAINTY_RANK = {"definite": 3, "probable": 2, "possible": 1, "unknown": 0}
+CERTAINTY_RANK = {"certain": 1, "uncertain": 0}
 
 
-def _build_label_array(report_text: str, findings: list[Finding]) -> list[int | None]:
-    """Return a per-character index into findings (highest-certainty finding wins)."""
+def _build_label_array(report_text: str, groups: list[FindingGroup]) -> list[int | None]:
+    """Return a per-character index into groups (highest-certainty group wins)."""
     label: list[int | None] = [None] * len(report_text)
-    for idx, f in enumerate(findings):
-        if f.start < 0:
-            continue
-        rank = CERTAINTY_RANK.get(f.certainty, 0)
-        for pos in range(f.start, min(f.end, len(report_text))):
-            existing = label[pos]
-            if existing is None or CERTAINTY_RANK.get(findings[existing].certainty, 0) < rank:
-                label[pos] = idx
+    for idx, g in enumerate(groups):
+        rank = CERTAINTY_RANK.get(g.certainty, 0)
+        for seg in g.segments:
+            if seg.start < 0:
+                continue
+            for pos in range(seg.start, min(seg.end, len(report_text))):
+                existing = label[pos]
+                if existing is None or CERTAINTY_RANK.get(groups[existing].certainty, 0) < rank:
+                    label[pos] = idx
     return label
 
 
-def _finding_span(text: str, finding: Finding, number: int) -> str:
-    color = CERTAINTY_COLORS.get(finding.certainty, "#e0e0e0")
-    tooltip = html.escape(f"#{number} {finding.finding_type} | {finding.anatomical_location} | {finding.certainty}")
+def _finding_span(text: str, group: FindingGroup, number: int) -> str:
+    color = HIGHLIGHT_COLOR
+    ft = group.finding_type_localized or group.finding_type
+    loc = group.anatomical_location_localized or group.anatomical_location
+    tooltip = html.escape(f"#{number} {ft} | {loc}")
     badge = (
         f'<sup style="background:#444;color:#fff;border-radius:3px;'
         f'padding:0 3px;font-size:0.65rem;margin-right:1px">{number}</sup>'
@@ -365,12 +583,13 @@ def _finding_span(text: str, finding: Finding, number: int) -> str:
     )
 
 
-def build_highlighted_html(report_text: str, findings: list[Finding]) -> str:
+def build_highlighted_html(report_text: str, groups: list[FindingGroup]) -> str:
     """
-    Step 3: build an HTML string with <span> highlights for every matched finding.
+    Step 3: build an HTML string with <span> highlights for every matched segment.
+    All segments of the same group share the same badge number and color.
     Overlapping spans are merged by priority (highest certainty wins).
     """
-    label = _build_label_array(report_text, findings)
+    label = _build_label_array(report_text, groups)
 
     parts: list[str] = []
     i = 0
@@ -384,7 +603,7 @@ def build_highlighted_html(report_text: str, findings: list[Finding]) -> str:
         else:
             while j < len(report_text) and label[j] == idx:
                 j += 1
-            parts.append(_finding_span(report_text[i:j], findings[idx], idx + 1))
+            parts.append(_finding_span(report_text[i:j], groups[idx], idx + 1))
         i = j
 
     body = "".join(parts).replace("\n", "<br>")
@@ -402,11 +621,20 @@ if run:
 
     st.divider()
 
-    # ---- Step 1 ----
-    with st.status("Step 1 — LLM extraction...", expanded=True) as step1_status:
+    report_lines = split_report_into_lines(mri_text)
+
+    # ---- Step 1 — Segmentation ----
+    with st.status("Step 1 — Segmentation...", expanded=True) as step1_status:
         try:
-            findings, raw_llm, cost_str = extract_findings(mri_text, target_language)
-            step1_status.update(label=f"Step 1 — LLM extraction complete ({len(findings)} findings) · {cost_str}", state="complete")
+            groups, raw_segment, cost_segment = extract_findings(report_lines)
+            total_segments = sum(len(g.segments) for g in groups)
+            step1_status.update(
+                label=(
+                    f"Step 1 — Segmentation complete "
+                    f"({len(groups)} findings, {total_segments} mentions) · {cost_segment}"
+                ),
+                state="complete",
+            )
         except LLMError as exc:
             step1_status.update(label=f"Step 1 — failed: {exc}", state="error")
             if exc.status_code:
@@ -420,67 +648,96 @@ if run:
             st.stop()
 
     with st.expander("Raw LLM output (Step 1)", expanded=False):
-        st.code(raw_llm, language="json")
+        st.code(raw_segment, language="json")
 
-    # ---- Step 2 ----
-    with st.status("Step 2 — Fuzzy back-mapping...", expanded=True) as step2_status:
-        findings = map_findings_to_offsets(mri_text, findings)
-        matched = sum(1 for f in findings if f.start >= 0)
-        step2_status.update(
-            label=f"Step 2 — Back-mapping complete ({matched}/{len(findings)} quotes located)",
+    # ---- Step 2 — Explanation ----
+    with st.status("Step 2 — Explanation...", expanded=True) as step2_status:
+        try:
+            groups, raw_explain, cost_explain = generate_explanations(
+                mri_text, groups, target_language
+            )
+            step2_status.update(
+                label=(
+                    f"Step 2 — Explanation complete "
+                    f"({sum(1 for g in groups if g.translation)}/{len(groups)} explained) · {cost_explain}"
+                ),
+                state="complete",
+            )
+        except LLMError as exc:
+            step2_status.update(label=f"Step 2 — failed: {exc}", state="error")
+            if exc.status_code:
+                st.error(f"HTTP {exc.status_code}")
+            if exc.response_body:
+                st.code(exc.response_body, language="json")
+            st.stop()
+        except Exception as exc:
+            step2_status.update(label="Step 2 — unexpected error", state="error")
+            st.exception(exc)
+            st.stop()
+
+    with st.expander("Raw LLM output (Step 2)", expanded=False):
+        st.code(raw_explain or "(skipped — no findings to explain)", language="json")
+
+    # ---- Step 3 — Fuzzy back-mapping ----
+    with st.status("Step 3 — Fuzzy back-mapping...", expanded=True) as step3_status:
+        groups = map_findings_to_offsets(mri_text, report_lines, groups)
+        all_segments = [seg for g in groups for seg in g.segments]
+        matched = sum(1 for seg in all_segments if seg.start >= 0)
+        step3_status.update(
+            label=f"Step 3 — Back-mapping complete ({matched}/{len(all_segments)} quotes located)",
             state="complete",
         )
 
-    with st.expander("Mapping results (Step 2)", expanded=False):
+    with st.expander("Mapping results (Step 3)", expanded=False):
         mapping_rows = [
             {
-                "quote": f.exact_quote[:60] + ("…" if len(f.exact_quote) > 60 else ""),
-                "start": f.start,
-                "end": f.end,
-                "match_score": round(f.match_score, 1),
-                "located": f.start >= 0,
+                "group_id": g.group_id,
+                "line_id": seg.line_id,
+                "quote": seg.exact_quote[:60] + ("…" if len(seg.exact_quote) > 60 else ""),
+                "start": seg.start,
+                "end": seg.end,
+                "match_score": round(seg.match_score, 1),
+                "located": seg.start >= 0,
             }
-            for f in findings
+            for g in groups
+            for seg in g.segments
         ]
         st.dataframe(mapping_rows, use_container_width=True)
 
-    # ---- Step 3 ----
-    st.subheader("Step 3 — Interpretation")
+    # ---- Step 4 — Interpretation ----
+    st.subheader("Step 4 — Interpretation")
 
     col_text, col_findings = st.columns([1, 1], gap="large")
 
     with col_text:
         st.markdown("**Highlighted report**")
 
-        # Legend
-        legend_html = " ".join(
-            f'<span style="background:{color};border-radius:3px;padding:2px 8px;margin-right:6px">'
-            f'{certainty}</span>'
-            for certainty, color in CERTAINTY_COLORS.items()
-        )
-        st.markdown(legend_html, unsafe_allow_html=True)
-        st.markdown("")
-
-        highlighted = build_highlighted_html(mri_text, findings)
+        highlighted = build_highlighted_html(mri_text, groups)
         st.markdown(highlighted, unsafe_allow_html=True)
 
     with col_findings:
         st.markdown("**Findings**")
-        for i, f in enumerate(findings, 1):
-            color = CERTAINTY_COLORS.get(f.certainty, "#e0e0e0")
+        translation_label = _ui_label("translation", target_language)
+        context_label = _ui_label("context", target_language)
+        for i, g in enumerate(groups, 1):
+            ft = g.finding_type_localized or g.finding_type
+            loc = g.anatomical_location_localized or g.anatomical_location
             with st.container(border=True):
+                mention_suffix = f" &nbsp;<span style=\"color:#888;font-size:0.8rem\">{len(g.segments)}×</span>" if len(g.segments) > 1 else ""
                 st.markdown(
                     f'<span style="background:#444;color:#fff;border-radius:3px;padding:1px 6px;'
                     f'font-size:0.8rem;margin-right:6px">#{i}</span>'
-                    f'<span style="background:{color};border-radius:3px;padding:1px 6px;'
-                    f'font-size:0.8rem">{f.certainty}</span> &nbsp;'
-                    f'<strong>{f.finding_type}</strong> — {f.anatomical_location}',
+                    f'<strong>{ft}</strong> — {loc}{mention_suffix}',
                     unsafe_allow_html=True,
                 )
-                st.markdown(f.explanation)
-                if f.start >= 0:
-                    st.caption(f'"{f.exact_quote[:80]}{"…" if len(f.exact_quote) > 80 else ""}"')
-                else:
-                    st.caption("_(quote not located in source text)_")
+                if g.translation:
+                    st.markdown(f"**{translation_label}:** {g.translation}")
+                if g.context:
+                    st.markdown(f"**{context_label}:** {g.context}")
+                for seg in g.segments:
+                    if seg.start >= 0:
+                        st.caption(f'"{seg.exact_quote[:80]}{"…" if len(seg.exact_quote) > 80 else ""}"')
+                    else:
+                        st.caption(f'_(not located)_ "{seg.exact_quote[:80]}{"…" if len(seg.exact_quote) > 80 else ""}"')
 
     st.caption(f"Completed at {datetime.now().strftime('%H:%M:%S')}")

@@ -1,0 +1,63 @@
+Study: Magnetic resonance imaging of the spine (one section)/cervical spine with contrast
+enhancement.
+MRI machine: Philips Achieva 1.5T.
+Age: 62.
+Sex: Female.
+Race: Caucasian.
+Brief anamnesis of the disease (complaints): no complaints.
+
+REPORT
+The study was performed in comparison with the previous MRI study dated 27.05.2022,
+presented in DICOM format.
+On a series of T1- and T2-weighted MR tomograms in two planes with fat-suppressed /T2-stir/:
+Cervical lordosis is straightened with formation of kyphotic deformity at the level of C3-C7
+vertebrae.
+The cerebellar tonsils are located at the level of the greater occipital foramen.
+The craniovertebral junction is featureless. Atlanto-dental distance is 0.2 cm.
+Degenerative changes (decrease in height) of C4-C7 discs, (dehydration) of C2-Th1 discs.
+The shape and size of the vertebral bodies are normal.
+Anterolateral osteophytes in the form of staples at the level of the C4-C7 segment.
+Posterior osteophytes of the C5-C7 vertebral bodies.
+Slightly pronounced diffuse dystrophic changes in the vertebral bodies at the level of
+visualization.
+The bony spinal canal is narrowed in the sagittal plane at the level of C2, C3 vertebrae, the
+minimum sagittal size of the bony spinal canal at the level of the bodies: C1 - 2.3 cm; C2 - 1.8 cm;
+C3 - 1.5 cm; C4-C7 - 1.4-1.5 cm (normal: C1>2.1 cm, C2>2.0 cm, C3>1.7 cm, C4-C7=1.4 cm).
+Dorsal disc protrusions:
+paramedian left-sided C4-C5 protrusion measuring 0.21 cm, the spinal canal at the level of disc
+prolapse is not narrowed; the lumen of the radicular canals is not narrowed, without signs of spinal
+root compression;
+discoosteophytic paramedian-foraminal right-sided C5-C6 disc protrusion measuring 0.23 cm,
+the spinal canal at the level of disc prolapse was not narrowed; the lumen of the radicular canals
+was slightly narrowed on the right side, without signs of spinal root compression;
+median-paramedian bilateral protrusion of C6-C7 measuring 0.22 cm, the spinal canal at the
+level of disc prolapse is not narrowed; the lumen of the radicular canals is not narrowed, without
+signs of spinal root compression.
+In the spinal cord at the level of C1, C2, C6, and Th1 vertebrae, single foci (increased MR signal
+on T2 and Stir, isointense on T1) with indistinct contours, elongated shape, maximum length up to
+1.0 cm, located in the posterior and lateral sections of the spinal cord were detected. The spinal
+cord at the level of the above-described changes is not thickened.
+No contrast accumulation in the foci was detected on postcontrast tomograms.
+Local slit-like dilation of the central canal of the spinal cord at the level of the Th2 vertebrae,
+up to 0.4 cm in length, with no signs of paramagnetic accumulation, was noted.
+
+Signs of spondyloarthrosis at the level of C2-Th1 segments were revealed.
+Pre- and paravertebral soft tissues are unchanged. The fatty tissue surrounding the dural sac is
+unchanged.
+The diameter of V2 segments of vertebral arteries at the level of visualization is asymmetric
+(D>S), not narrowed.
+
+CONCLUSION
+MR sign of single intramedullary foci (specific for demyelinating disease, MS, inactive stage). MR
+signs of dystrophic changes in the cervical spine. Protrusions of C4-C5, C5-C6, C6-C7 discs.
+Spondylosis at the level of C4-C7 segment. Spondyloarthrosis at the level of C2-Th1 segments.
+Cervical kyphosis at the level of C3-C7 vertebrae. Anatomic narrowness of the bony spinal canal
+at the level of C2, C3 vertebrae. Asymmetry of V2 segments of vertebral arteries (D>S). MR signs
+of slit-like dilation of the central canal of the spinal cord at the level of Th2 vertebrae (more likely
+manifestations of local hydromyelia).
+Compared to the previous MRI study dated 27.05.2022 submitted in DICOM format: no dynamic
+changes.
+RECOMMENDATIONS.
+Consultation of the attending physician.
+
+Year of study and report: 2023

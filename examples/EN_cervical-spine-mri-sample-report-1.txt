@@ -1,0 +1,65 @@
+[ NationalRad Sample Neuroradiology Report ]
+
+Imaging Center
+123 Main Street
+Anywhere, USA 01234
+Phone 123.456.7890
+Fax 123.456.7890
+
+PATIENT: JOHN SMITH
+DOB: 5/5/1955
+FILE #: 12345
+PHYSICIAN: REFERRING
+EXAM: MRI CERVICAL SPINE
+DATE: 1/1/2011
+
+Report approved on
+NationalRad | Headquartered: Florida | Diagnostic Imaging Services: Nationwide | 877.734.6674 | www.NationalRad.com
+CLINICAL INFORMATION
+Left neck and shoulder pain for 2 months
+COMPARISON
+None
+CONTRAST
+None given
+TECHNIQUE
+MRI of the cervical spine was obtained with the following sequences: Axial GRE, sagittal T1, T2, and STIR.
+FINDINGS
+ALIGNMENT: There is straightening of the normal cervical lordosis which may be positional or related to
+muscular spasm.
+DISCS: There is moderate to severe disc space narrowing from C4-5 through C6-7 with prominent prevertebral
+spondylosis.
+CORD: Spinal cord is normal in caliber and signal intensity. Cerebellar tonsils are normally located.
+BONE MARROW: No destructive bony lesions. There is low T1 signal intensity within the bone marrow
+surrounding the left C4-5 facet joint which may be reactive to facet arthropathy.
+
+Page 2 of 2
+
+Report approved on
+NationalRad | Headquartered: Florida | Diagnostic Imaging Services: Nationwide | 877.734.6674 | www.NationalRad.com
+LEVEL BY LEVEL ANALYSIS:
+C2-3: No disc osteophyte complex, spinal canal stenosis, or neural foraminal narrowing.
+C3-4: There is a focal 1-2 mm central disc protrusion and mild right uncovertebral joint hypertrophy with
+deformity of the ventral thecal sac with a mild spinal canal stenosis. No significant neural foraminal narrowing.
+C4-5: There is a diffuse disc osteophyte more prominent on the left and left facet arthropathy with flattening of
+the ventral thecal sac with a mild spinal canal stenosis and moderate right and moderate to severe left neural
+foraminal narrowing.
+C5-6: There is a diffuse disc osteophyte more prominent on the right and mild bilateral facet joint hypertrophy
+with flattening of the ventral thecal sac with a mild spinal canal stenosis and moderate to severe right and mild
+left neural foraminal narrowing.
+C6-7: There is a diffuse disc osteophyte which results in flattening of the ventral thecal sac with a mild spinal
+canal stenosis and moderate to severe bilateral neural foraminal narrowing.
+C7-T1: No disc osteophyte complex, spinal canal stenosis, or neural foraminal narrowing.
+OTHER FINDINGS: No paraspinal soft tissue mass.
+IMPRESSION
+1. Multilevel degenerative disease and facet arthropathy as detailed above, most severe from C4-5 through C6-7.
+2. C6-7 mild spinal canal stenosis with flattening of the ventral thecal sac and moderate to severe bilateral neural
+foraminal narrowing.
+3. C5-6 mild spinal canal stenosis with flattening of the ventral thecal sac and moderate to severe right and mild
+left neural foraminal narrowing.
+4. C4-5 mild spinal canal stenosis with flattening of the ventral thecal sac and moderate right and moderate to
+severe left neural foraminal narrowing. There is left facet arthropathy with surrounding low T1 signal intensity
+within the bone marrow which is likely reactive.
+
+[NationalRad Neuroradiologist]
+Board Certified Radiologist
+THIS REPORT WAS ELECTRONICALLY SIGNED
