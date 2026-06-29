@@ -1,6 +1,7 @@
 import html
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -174,6 +175,52 @@ class FindingGroup:
     anatomical_location_localized: str = ""
     translation: str = ""        # Step 2: plain-language rendering in target language
     context: str = ""            # Step 2: what this could mean for the patient
+
+
+# ---------------------------------------------------------------------------
+# Report normalization — un-wrap soft (margin) line breaks
+# ---------------------------------------------------------------------------
+# PDF/print exports wrap long sentences at a fixed margin, so a single finding
+# can straddle a hard newline (e.g. "...prominent prevertebral\nspondylosis").
+# That breaks per-line quote anchoring: the LLM cannot quote the phrase from one
+# physical line, so it either fragments the finding or the fuzzy match degrades.
+# We undo those margin wraps before anything else. Each dropped newline is
+# replaced 1:1 with a space so character offsets are preserved; real section
+# headers and sentence breaks are kept.
+
+_WRAP_MIN_LEN = 80  # a physical line this long likely ran to the page margin
+
+_STRUCTURAL_START = re.compile(
+    r"""^\s*(
+        [A-Z][0-9]+-[A-Z]?[0-9]+\s*:        # level marker, e.g. "C4-5:", "C7-T1:"
+        | \d+\.\s                            # numbered impression item, e.g. "1. "
+        | [A-Z][A-Z\ \-/]{2,}:?\s*$          # ALL-CAPS section header, e.g. "DISCS:"
+    )""",
+    re.VERBOSE,
+)
+
+
+def _continues_previous(prev: str, cur: str) -> bool:
+    """True when `cur` is a soft-wrapped continuation of `prev`, not a new line."""
+    if not prev.strip() or not cur.strip():
+        return False
+    if _STRUCTURAL_START.match(cur):
+        return False
+    if len(prev.rstrip()) < _WRAP_MIN_LEN:
+        return False
+    return prev.rstrip()[-1] not in ".:;!?"
+
+
+def unwrap_soft_wraps(report_text: str) -> str:
+    """Join margin-wrapped physical lines into logical lines (offset-preserving)."""
+    text = report_text.replace("\r\n", "\n").replace("\r", "\n")
+    out: list[str] = []
+    for line in text.split("\n"):
+        if out and _continues_previous(out[-1], line):
+            out[-1] = out[-1] + " " + line  # dropped "\n" -> " " keeps length/offsets
+        else:
+            out.append(line)
+    return "\n".join(out)
 
 
 def split_report_into_lines(report_text: str) -> list[ReportLine]:
@@ -631,7 +678,11 @@ if run:
 
     st.divider()
 
-    report_lines = split_report_into_lines(mri_text)
+    # Un-wrap PDF-style margin line breaks so findings that straddle a wrap
+    # become quotable from a single logical line. Offset-preserving, so this is
+    # the canonical text for matching and display from here on.
+    report_text = unwrap_soft_wraps(mri_text)
+    report_lines = split_report_into_lines(report_text)
 
     # ---- Step 1 — Segmentation ----
     with st.status("Step 1 — Segmentation...", expanded=True) as step1_status:
@@ -664,7 +715,7 @@ if run:
     with st.status("Step 2 — Explanation...", expanded=True) as step2_status:
         try:
             groups, raw_explain, cost_explain = generate_explanations(
-                mri_text, groups, target_language
+                report_text, groups, target_language
             )
             step2_status.update(
                 label=(
@@ -690,7 +741,7 @@ if run:
 
     # ---- Step 3 — Fuzzy back-mapping ----
     with st.status("Step 3 — Fuzzy back-mapping...", expanded=True) as step3_status:
-        groups = map_findings_to_offsets(mri_text, report_lines, groups)
+        groups = map_findings_to_offsets(report_text, report_lines, groups)
         all_segments = [seg for g in groups for seg in g.segments]
         matched = sum(1 for seg in all_segments if seg.start >= 0)
         step3_status.update(
@@ -722,7 +773,7 @@ if run:
     with col_text:
         st.markdown("**Highlighted report**")
 
-        highlighted = build_highlighted_html(mri_text, groups)
+        highlighted = build_highlighted_html(report_text, groups)
         st.markdown(highlighted, unsafe_allow_html=True)
 
     with col_findings:
