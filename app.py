@@ -260,9 +260,19 @@ For every finding, produce all of the following IN {language}:
 2. A short translation of the anatomical_location into {language}.
 3. A "translation" — ONE sentence that re-states, in plain non-medical language, \
 what the report actually says about this finding.
-4. A "context" — 1–2 sentences describing what this finding could mean for the \
-patient: what it might cause, how it could feel, or what typical implications \
-are. Be concrete but not alarmist.
+4. A "context" — 1–2 sentences describing what this finding IS in plain terms. \
+Describe the current state of things, not predictions. Be concrete but not alarmist.
+
+IMPORTANT WORDING RULES for the "translation" and "context" fields:
+- Do NOT use language that frames the body as deteriorating from use, such as \
+"wear and tear", "drying out", "wearing out", "worn down", "degenerated from \
+use", or equivalents in {language}. Such phrasing can make patients think that \
+moving makes things worse and that they should move less. \
+Instead describe these as "natural" or "degenerative" changes.
+- Do NOT predict prognosis. Avoid describing how the finding "may worsen", "could \
+get worse over time", or what problems it "could lead to / cause in the future". \
+Describe what is — what the finding is, or what it may be / will be — not what \
+might happen to it later.
 
 ALL five output fields MUST be written in {language}. Do not leave any field \
 in English or in the original report language unless {language} IS English.
@@ -273,7 +283,7 @@ array of objects, each with exactly these keys:
 - "finding_type": translation of the input finding_type into {language}
 - "anatomical_location": translation of the input anatomical_location into {language}
 - "translation": 1 sentence in {language} — plain-language rendering of the finding
-- "context": 1–2 sentences in {language} — implications for the patient
+- "context": 1–2 sentences in {language} — plain description of what the finding is (no prognosis, no "wear and tear" language)
 
 No markdown fences, no extra text.
 
