@@ -62,13 +62,15 @@ with st.sidebar:
     )
     st.caption("Set OPENAI_API_KEY in your environment")
 
-MODEL = "gpt-5.4"
-TEMPERATURE = 0.2
+MODEL = "gpt-5.6-sol"
+TEMPERATURE = None
 MAX_TOKENS = 10000
 
-# gpt-5.4 pricing (USD per token)
-PRICE_INPUT_PER_TOKEN = 2.50 / 1_000_000
-PRICE_OUTPUT_PER_TOKEN = 15.00 / 1_000_000
+# gpt-5.6-sol pricing (USD per token), standard tier.
+# Full table per 1M tokens: input $5.00, cached input $0.50, cache writes $6.25,
+# output $30.00. estimate_cost() only models plain input/output below.
+PRICE_INPUT_PER_TOKEN = 5.00 / 1_000_000
+PRICE_OUTPUT_PER_TOKEN = 30.00 / 1_000_000
 
 HIGHLIGHT_COLOR = "#ffd166"
 
@@ -166,15 +168,30 @@ class FindingSegment:
 
 @dataclass
 class FindingGroup:
+    """One clinical finding at one location (the leaf level). May have several
+    mentions/segments across the report."""
     group_id: str
     finding_type: str           # canonical English from Step 1 (kept for debugging/grouping invariants)
     anatomical_location: str    # canonical English from Step 1
     certainty: str              # enum: certain / uncertain (internal only; not shown in UI)
     segments: list[FindingSegment]
-    finding_type_localized: str = ""
-    anatomical_location_localized: str = ""
-    translation: str = ""        # Step 2: plain-language rendering in target language
-    context: str = ""            # Step 2: what this could mean for the patient
+    category_id: str = ""        # coarse cluster slug (finding kind, location-independent), from Step 1
+    category: str = ""           # human-readable category label (English, from Step 1)
+
+
+@dataclass
+class Category:
+    """A cluster of same-kind findings across levels — the unit of explanation
+    and display. One card per category in the UI; one shared badge number in the
+    highlighted report."""
+    category_id: str
+    label: str                          # English label from Step 1
+    groups: list[FindingGroup]
+    number: int = 0                     # badge number shared by all this category's spans
+    label_localized: str = ""           # Step 2: category label in target language
+    levels_summary: str = ""            # Step 2: short localized phrase listing levels + severity
+    translation: str = ""               # Step 2: one plain-language sentence for the whole category
+    context: str = ""                   # Step 2: 1–2 sentences on what the category is
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +282,16 @@ the SAME "group_id". Distinct findings (different type or different location) MU
 have different group_ids. When group_ids match, the finding_type, anatomical_location, \
 and certainty fields MUST also match across those objects.
 
+Additionally, assign each finding a coarser "category_id": a slug for the KIND of \
+finding, IGNORING anatomical location and severity. Findings of the same kind at \
+different levels or of different severity MUST share the same "category_id" (e.g. \
+mild stenosis at C4-5 and severe stenosis at C6-7 are both "spinal-canal-stenosis"). \
+Different kinds of finding MUST have different category_ids. Do NOT use a fixed list \
+— name the categories from what you actually see in THIS report, but keep the naming \
+consistent across all findings of the same kind. A "category_id" is always coarser \
+than a "group_id": every group_id maps to exactly one category_id. Also provide a \
+short human-readable "category" label that matches the category_id.
+
 The report below is presented with each line prefixed by a bracketed line number, \
 e.g. "[3] ...". For EVERY finding you extract, return the line number of the line \
 that contains the quote as the integer "line_id". The "exact_quote" MUST be a \
@@ -280,6 +307,11 @@ do not include the "[N] " prefix)
 "disc-herniation-l4-l5", "marrow-signal-change-l3-body". Mentions of the same \
 finding at the same location MUST share this exact slug. Use only lowercase \
 letters, digits, and hyphens.
+- "category_id": a coarser slug for the KIND of finding, ignoring location and \
+severity, e.g. "spinal-canal-stenosis", "neural-foraminal-narrowing". All findings \
+of the same kind share this slug. Use only lowercase letters, digits, and hyphens.
+- "category": a short human-readable label matching category_id, e.g. \
+"spinal canal stenosis", "neural foraminal narrowing".
 - "finding_type": short category label, e.g. "disc herniation", "stenosis", \
 "signal change", "structural anomaly", "degenerative change", etc.
 - "anatomical_location": the anatomical region or level described, spelled out \
@@ -297,17 +329,22 @@ MRI report:
 
 
 EXPLANATION_PROMPT = """\
-You are a radiology assistant. Below is an MRI report followed by a list of \
-findings that were already extracted from it. For EACH finding, produce \
-patient-facing text in {language} for a non-expert audience. Use the full \
-report as context, but do NOT introduce findings that are not in the list.
+You are a radiology assistant. Below is an MRI report followed by findings that \
+were already extracted from it, grouped into CATEGORIES. Each category is one KIND \
+of finding (e.g. spinal canal stenosis) and lists the levels where it occurs, each \
+with its severity. For EACH category as a whole, produce patient-facing text in \
+{language} for a non-expert audience. Use the full report as context, but do NOT \
+introduce findings that are not in the list.
 
-For every finding, produce all of the following IN {language}:
-1. A short translation of the finding_type into {language}.
-2. A short translation of the anatomical_location into {language}.
-3. A "translation" — ONE sentence that re-states, in plain non-medical language, \
-what the report actually says about this finding.
-4. A "context" — 1–2 sentences describing what this finding IS in plain terms. \
+Write ONE explanation per category that covers ALL of its levels together — do NOT \
+repeat near-identical text per level. For every category, produce all of the \
+following IN {language}:
+1. "category" — a short translation of the category label into {language}.
+2. "levels_summary" — a short phrase listing the affected levels and their severity, \
+e.g. "C4-5, C5-6 a C6-7 – mierne" (levels stay as-is, e.g. "C4-5"; severity words in {language}).
+3. "translation" — ONE sentence that re-states, in plain non-medical language, what \
+the report says about this category across its levels.
+4. "context" — 1–2 sentences describing what this kind of finding IS in plain terms. \
 Describe the current state of things, not predictions. Be concrete but not alarmist.
 
 IMPORTANT WORDING RULES for the "translation" and "context" fields:
@@ -321,15 +358,15 @@ get worse over time", or what problems it "could lead to / cause in the future".
 Describe what is — what the finding is, or what it may be / will be — not what \
 might happen to it later.
 
-ALL five output fields MUST be written in {language}. Do not leave any field \
+ALL output fields MUST be written in {language}. Do not leave any field \
 in English or in the original report language unless {language} IS English.
 
 Return ONLY a JSON object with a single key "explanations" whose value is an \
 array of objects, each with exactly these keys:
-- "group_id": the exact group_id from the input list, copied verbatim
-- "finding_type": translation of the input finding_type into {language}
-- "anatomical_location": translation of the input anatomical_location into {language}
-- "translation": 1 sentence in {language} — plain-language rendering of the finding
+- "category_id": the exact category_id from the input list, copied verbatim
+- "category": translation of the input category label into {language}
+- "levels_summary": short {language} phrase listing the levels and severity
+- "translation": 1 sentence in {language} — plain-language rendering of the category
 - "context": 1–2 sentences in {language} — plain description of what the finding is (no prognosis, no "wear and tear" language)
 
 No markdown fences, no extra text.
@@ -337,7 +374,7 @@ No markdown fences, no extra text.
 MRI report:
 {report}
 
-Findings:
+Categories:
 {findings_json}
 """
 
@@ -372,7 +409,7 @@ def call_openai_raw(prompt: str) -> tuple[str, dict]:
                 "Content-Type": "application/json",
             },
             data=json.dumps(payload),
-            timeout=60,
+            timeout=120,
         )
     except requests.exceptions.Timeout:
         raise LLMError("Request timed out after 60 s. The model may be overloaded.")
@@ -461,31 +498,43 @@ def extract_findings(lines: list[ReportLine]) -> tuple[list[FindingGroup], str, 
                 anatomical_location=f.get("anatomical_location", ""),
                 certainty=_normalize_certainty(f.get("certainty", "")),
                 segments=[segment],
+                category_id=f.get("category_id", "") or "",
+                category=f.get("category", "") or "",
             )
     return list(groups.values()), raw, cost_str
 
 
 def generate_explanations(
-    report_text: str, groups: list[FindingGroup], language: str
-) -> tuple[list[FindingGroup], str, str]:
-    """Step 2: LLM call that fills in patient-facing explanations per group."""
-    if not groups:
-        return groups, "", estimate_cost({})
+    report_text: str, categories: list[Category], language: str
+) -> tuple[list[Category], str, str]:
+    """Step 2: one LLM call that fills in patient-facing text per CATEGORY.
 
-    findings_payload = [
+    Explaining per category (rather than per level) dedupes the near-identical
+    text that repeats when the same finding appears at many spinal levels.
+    """
+    if not categories:
+        return categories, "", estimate_cost({})
+
+    payload = [
         {
-            "group_id": g.group_id,
-            "finding_type": g.finding_type,
-            "anatomical_location": g.anatomical_location,
-            "certainty": g.certainty,
-            "quote": g.segments[0].exact_quote if g.segments else "",
+            "category_id": c.category_id,
+            "category": c.label,
+            "levels": [
+                {
+                    "anatomical_location": g.anatomical_location,
+                    "finding_type": g.finding_type,
+                    "certainty": g.certainty,
+                    "quote": g.segments[0].exact_quote if g.segments else "",
+                }
+                for g in c.groups
+            ],
         }
-        for g in groups
+        for c in categories
     ]
     prompt = EXPLANATION_PROMPT.format(
         language=language,
         report=report_text,
-        findings_json=json.dumps(findings_payload, ensure_ascii=False, indent=2),
+        findings_json=json.dumps(payload, ensure_ascii=False, indent=2),
     )
     raw, usage = call_openai_raw(prompt)
     cost_str = estimate_cost(usage)
@@ -498,16 +547,16 @@ def generate_explanations(
             response_body=raw,
         ) from exc
 
-    by_id = {g.group_id: g for g in groups}
+    by_id = {c.category_id: c for c in categories}
     for item in parsed.get("explanations", []):
-        g = by_id.get(item.get("group_id"))
-        if g is None:
+        c = by_id.get(item.get("category_id"))
+        if c is None:
             continue
-        g.finding_type_localized = item.get("finding_type", "")
-        g.anatomical_location_localized = item.get("anatomical_location", "")
-        g.translation = item.get("translation", "")
-        g.context = item.get("context", "")
-    return groups, raw, cost_str
+        c.label_localized = item.get("category", "")
+        c.levels_summary = item.get("levels_summary", "")
+        c.translation = item.get("translation", "")
+        c.context = item.get("context", "")
+    return categories, raw, cost_str
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +658,30 @@ def map_findings_to_offsets(
 CERTAINTY_RANK = {"certain": 1, "uncertain": 0}
 
 
+def build_categories(groups: list[FindingGroup]) -> list[Category]:
+    """Cluster groups by category_id into Category objects, preserving
+    first-appearance order and assigning each a 1-based badge number.
+
+    Groups without a category_id each form their own singleton category, so an
+    uncategorized finding still renders as a standalone card, as before.
+    """
+    order: list[str] = []
+    buckets: dict[str, list[FindingGroup]] = {}
+    for g in groups:
+        cid = g.category_id or f"__uncat_{id(g)}"
+        if cid not in buckets:
+            buckets[cid] = []
+            order.append(cid)
+        buckets[cid].append(g)
+
+    categories: list[Category] = []
+    for number, cid in enumerate(order, 1):
+        gs = buckets[cid]
+        label = gs[0].category or gs[0].finding_type
+        categories.append(Category(category_id=cid, label=label, groups=gs, number=number))
+    return categories
+
+
 def _build_label_array(report_text: str, groups: list[FindingGroup]) -> list[int | None]:
     """Return a per-character index into groups (highest-certainty group wins)."""
     label: list[int | None] = [None] * len(report_text)
@@ -624,11 +697,9 @@ def _build_label_array(report_text: str, groups: list[FindingGroup]) -> list[int
     return label
 
 
-def _finding_span(text: str, group: FindingGroup, number: int) -> str:
+def _finding_span(text: str, number: int, tooltip_label: str) -> str:
     color = HIGHLIGHT_COLOR
-    ft = group.finding_type_localized or group.finding_type
-    loc = group.anatomical_location_localized or group.anatomical_location
-    tooltip = html.escape(f"#{number} {ft} | {loc}")
+    tooltip = html.escape(f"#{number} {tooltip_label}")
     badge = (
         f'<sup style="background:#444;color:#fff;border-radius:3px;'
         f'padding:0 3px;font-size:0.65rem;margin-right:1px">{number}</sup>'
@@ -640,12 +711,21 @@ def _finding_span(text: str, group: FindingGroup, number: int) -> str:
     )
 
 
-def build_highlighted_html(report_text: str, groups: list[FindingGroup]) -> str:
+def build_highlighted_html(report_text: str, categories: list[Category]) -> str:
     """
     Step 3: build an HTML string with <span> highlights for every matched segment.
-    All segments of the same group share the same badge number and color.
-    Overlapping spans are merged by priority (highest certainty wins).
+    All segments belonging to the same category share the category's badge number
+    and a single highlight color. Overlapping spans are merged by priority
+    (highest certainty wins).
     """
+    # Flatten to the group list the label array indexes into, and remember each
+    # group's category number + label for the badge/tooltip.
+    groups = [g for c in categories for g in c.groups]
+    meta_by_group_idx = {
+        id(g): (c.number, c.label_localized or c.label)
+        for c in categories
+        for g in c.groups
+    }
     label = _build_label_array(report_text, groups)
 
     parts: list[str] = []
@@ -660,7 +740,9 @@ def build_highlighted_html(report_text: str, groups: list[FindingGroup]) -> str:
         else:
             while j < len(report_text) and label[j] == idx:
                 j += 1
-            parts.append(_finding_span(report_text[i:j], groups[idx], idx + 1))
+            g = groups[idx]
+            number, tip = meta_by_group_idx[id(g)]
+            parts.append(_finding_span(report_text[i:j], number, tip))
         i = j
 
     body = "".join(parts).replace("\n", "<br>")
@@ -711,16 +793,21 @@ if run:
     with st.expander("Raw LLM output (Step 1)", expanded=False):
         st.code(raw_segment, language="json")
 
+    # Cluster the per-location findings into categories (the display + explanation
+    # unit). Category order = first appearance, and fixes the badge numbering used
+    # by both the highlighted report and the Findings column.
+    categories = build_categories(groups)
+
     # ---- Step 2 — Explanation ----
     with st.status("Step 2 — Explanation...", expanded=True) as step2_status:
         try:
-            groups, raw_explain, cost_explain = generate_explanations(
-                report_text, groups, target_language
+            categories, raw_explain, cost_explain = generate_explanations(
+                report_text, categories, target_language
             )
             step2_status.update(
                 label=(
                     f"Step 2 — Explanation complete "
-                    f"({sum(1 for g in groups if g.translation)}/{len(groups)} explained) · {cost_explain}"
+                    f"({sum(1 for c in categories if c.translation)}/{len(categories)} categories explained) · {cost_explain}"
                 ),
                 state="complete",
             )
@@ -752,6 +839,7 @@ if run:
     with st.expander("Mapping results (Step 3)", expanded=False):
         mapping_rows = [
             {
+                "category_id": g.category_id,
                 "group_id": g.group_id,
                 "line_id": seg.line_id,
                 "quote": seg.exact_quote[:60] + ("…" if len(seg.exact_quote) > 60 else ""),
@@ -773,32 +861,62 @@ if run:
     with col_text:
         st.markdown("**Highlighted report**")
 
-        highlighted = build_highlighted_html(report_text, groups)
+        highlighted = build_highlighted_html(report_text, categories)
         st.markdown(highlighted, unsafe_allow_html=True)
 
     with col_findings:
         st.markdown("**Findings**")
         translation_label = _ui_label("translation", target_language)
         context_label = _ui_label("context", target_language)
-        for i, g in enumerate(groups, 1):
-            ft = g.finding_type_localized or g.finding_type
-            loc = g.anatomical_location_localized or g.anatomical_location
+
+        # One card per category. Multi-level categories are summarized in a single
+        # card (levels_summary line); a single-level category reads as a plain card.
+        for c in categories:
+            label = c.label_localized or c.label
+            if c.levels_summary:
+                levels_note = f' &nbsp;<span style="color:#888;font-size:0.85rem">{html.escape(c.levels_summary)}</span>'
+            elif len(c.groups) > 1:
+                levels_note = f' &nbsp;<span style="color:#888;font-size:0.85rem">{len(c.groups)} levels</span>'
+            else:
+                levels_note = ""
             with st.container(border=True):
-                mention_suffix = f" &nbsp;<span style=\"color:#888;font-size:0.8rem\">{len(g.segments)}×</span>" if len(g.segments) > 1 else ""
                 st.markdown(
                     f'<span style="background:#444;color:#fff;border-radius:3px;padding:1px 6px;'
-                    f'font-size:0.8rem;margin-right:6px">#{i}</span>'
-                    f'<strong>{ft}</strong> — {loc}{mention_suffix}',
+                    f'font-size:0.8rem;margin-right:6px">#{c.number}</span>'
+                    f'<strong>{html.escape(label)}</strong>{levels_note}',
                     unsafe_allow_html=True,
                 )
-                if g.translation:
-                    st.markdown(f"**{translation_label}:** {g.translation}")
-                if g.context:
-                    st.markdown(f"**{context_label}:** {g.context}")
-                for seg in g.segments:
-                    if seg.start >= 0:
-                        st.caption(f'"{seg.exact_quote[:80]}{"…" if len(seg.exact_quote) > 80 else ""}"')
-                    else:
-                        st.caption(f'_(not located)_ "{seg.exact_quote[:80]}{"…" if len(seg.exact_quote) > 80 else ""}"')
+                if c.translation:
+                    st.markdown(f"**{translation_label}:** {c.translation}")
+                if c.context:
+                    st.markdown(f"**{context_label}:** {c.context}")
+                # Collapse source phrases by wording. The same phrasing recurs
+                # across levels and impression items (e.g. "flattening of the
+                # ventral thecal sac" at C4-5/C5-6/C6-7 and again in the summary);
+                # those are distinct physical mentions but identical text, so we
+                # show each unique wording once with an ×N count. This also folds
+                # away the same-span duplicates from summarizing phrases.
+                phrases: dict[str, dict] = {}
+                order: list[str] = []
+                for g in c.groups:
+                    for seg in g.segments:
+                        norm = seg.exact_quote.strip().lower()
+                        if not norm:
+                            continue
+                        if norm not in phrases:
+                            phrases[norm] = {"text": seg.exact_quote, "count": 0, "located": False}
+                            order.append(norm)
+                        phrases[norm]["count"] += 1
+                        if seg.start >= 0:
+                            phrases[norm]["located"] = True
+                with st.expander(f"Source phrases ({len(order)})", expanded=False):
+                    for norm in order:
+                        info = phrases[norm]
+                        clipped = info["text"][:80] + ("…" if len(info["text"]) > 80 else "")
+                        suffix = f" ×{info['count']}" if info["count"] > 1 else ""
+                        if info["located"]:
+                            st.caption(f'"{clipped}"{suffix}')
+                        else:
+                            st.caption(f'_(not located)_ "{clipped}"{suffix}')
 
     st.caption(f"Completed at {datetime.now().strftime('%H:%M:%S')}")
